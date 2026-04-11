@@ -53,7 +53,15 @@ End your analysis with:
 RISK_LEVEL: <CRITICAL|HIGH|MEDIUM|LOW>
 SUMMARY: <2-3 sentence overall summary>
 IMPORTANT: Never use markdown bold (**text**) or 
-headers (## text). Plain text only. No exceptions."""
+headers (## text). Plain text only. No exceptions.
+IMPORTANT RULES FOR ACCURACY:
+- nmap filtered or no-response means INCONCLUSIVE not vulnerable
+- Never assert a server version without seeing it in scan output
+- Never infer CVEs from guessed versions
+- curl timeouts and HTTP_CODE=000 mean the host is unreachable not exploitable
+- ab and stress tools are not Slowloris unless confirmed
+- Only assign CRITICAL if there is direct evidence of exploitability
+- If evidence is weak mark severity as LOW with note: unconfirmed"""
 
 
 # ─────────────────────────────────────────────
