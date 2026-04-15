@@ -2,7 +2,7 @@
 
 import os
 import datetime
-import mysql.connector
+from db import get_connection
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import mm
@@ -25,15 +25,6 @@ RISK_COLORS = {
     "LOW":      "#27ae60",
     "UNKNOWN":  "#7f8c8d",
 }
-
-
-def get_connection():
-    return mysql.connector.connect(
-        host="localhost",
-        user="metatron",
-        password="123",
-        database="metatron"
-    )
 
 
 def fetch_session(sl_no: int) -> dict:

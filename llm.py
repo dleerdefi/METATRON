@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 METATRON - llm.py
-Ollama interface for metatron-qwen model.
+LM Studio interface (OpenAI-compatible API).
 Builds prompts, handles AI responses, runs tool dispatch loop.
-Model: metatron-qwen (fine-tuned from huihui_ai/qwen3.5-abliterated:9b)
 """
 
 import re
@@ -11,18 +10,13 @@ import requests
 import json
 from tools import run_tool_by_command, run_nmap, run_curl_headers
 from search import handle_search_dispatch
-
-OLLAMA_URL  = "http://localhost:11434/api/chat"
-MODEL_NAME  = "metatron-qwen"
-MAX_TOKENS = 8192
-MAX_TOOL_LOOPS = 9   # max times AI can call tools per session
-OLLAMA_TIMEOUT = 600 
+from config import LLM_URL, LLM_MODELS_URL, LLM_BASE_URL, MODEL_NAME, MAX_TOKENS, MAX_TOOL_LOOPS, LLM_TIMEOUT
 
 # ─────────────────────────────────────────────
 # SYSTEM PROMPT
 # ─────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are METATRON, an elite AI penetration testing assistant running on Parrot OS.
+SYSTEM_PROMPT = """You are METATRON, an elite AI penetration testing assistant running on Kali Linux.
 You are precise, technical, and direct. No fluff.
 
 You have access to real tools. To use them, write tags in your response:
@@ -68,32 +62,35 @@ IMPORTANT RULES FOR ACCURACY:
 # OLLAMA API CALL
 # ─────────────────────────────────────────────
 
-def ask_ollama(messages: list) -> str:
+def ask_llm(messages: list) -> str:
     try:
         payload = {
             "model":  MODEL_NAME,
             "messages": messages,
             "stream": False,
-            "options": {
-                "num_predict": MAX_TOKENS,
-                "temperature": 0.7,
-                "top_p": 0.9,
-            }
+            "max_tokens": MAX_TOKENS,
+            "temperature": 0.7,
+            "top_p": 0.9,
         }
+        headers = {"Content-Type": "application/json"}
         print(f"\n[*] Sending to {MODEL_NAME}...")
-        resp = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_TIMEOUT)
+        resp = requests.post(LLM_URL, json=payload, headers=headers, timeout=LLM_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
-        response = data.get("message", {}).get("content", "").strip()
+        msg = data["choices"][0]["message"]
+        response = (msg.get("content") or "").strip()
+        if not response:
+            # Qwen 3.5 thinking models may put all output in reasoning_content
+            response = (msg.get("reasoning_content") or "").strip()
         if not response:
             return "[!] Model returned empty response."
         return response
     except requests.exceptions.ConnectionError:
-        return "[!] Cannot connect to Ollama. Is it running? Try: ollama serve"
+        return f"[!] Cannot connect to LM Studio at {LLM_BASE_URL}. Is it running?"
     except requests.exceptions.Timeout:
-        return "[!] Ollama timed out. Model may be loading, try again."
+        return f"[!] LLM timed out. Model may be loading, try again."
     except requests.exceptions.HTTPError as e:
-        return f"[!] Ollama HTTP error: {e}"
+        return f"[!] LLM HTTP error: {e}"
     except Exception as e:
         return f"[!] Unexpected error: {e}"
 
@@ -135,15 +132,15 @@ def summarize_tool_output(raw_output: str) -> str:
     {"role": "system", "content": "You are a security data compressor. Extract only security-relevant facts. Return maximum 15 bullet points. Plain text only. No markdown."},
     {"role": "user", "content": f"Compress this tool output:\n{raw_output[:6000]}"} ],
             "stream": False,
-            "options": {
-                "num_predict": 512,
-                "temperature": 0.2,
-                "top_p": 0.9,
-            }
+            "max_tokens": 512,
+            "temperature": 0.2,
+            "top_p": 0.9,
         }
-        resp = requests.post(OLLAMA_URL, json=payload, timeout=120)
+        headers = {"Content-Type": "application/json"}
+        resp = requests.post(LLM_URL, json=payload, headers=headers, timeout=120)
         resp.raise_for_status()
-        summary = resp.json().get("message", {}).get("content", "").strip()
+        msg = resp.json()["choices"][0]["message"]
+        summary = (msg.get("content") or msg.get("reasoning_content") or "").strip()
         return summary if summary else raw_output
     except Exception:
         return raw_output
@@ -317,7 +314,7 @@ List all vulnerabilities, fixes, and suggest exploits where applicable."""
     final_response = ""
 
     for loop in range(MAX_TOOL_LOOPS):
-        response = ask_ollama(messages)
+        response = ask_llm(messages)
 
         print(f"\n{'─'*60}")
         print(f"[METATRON - Round {loop + 1}]")
@@ -369,12 +366,18 @@ If analysis is complete, give the final RISK_LEVEL and SUMMARY."""
 if __name__ == "__main__":
     print("[ llm.py test — direct AI query ]\n")
 
-    # test if ollama is reachable
+    # test if LM Studio is reachable
     try:
-        r = requests.get("http://localhost:11434", timeout=5)
-        print("[+] Ollama is running.")
+        r = requests.get(LLM_MODELS_URL, timeout=5)
+        r.raise_for_status()
+        models = r.json().get("data", [])
+        if models:
+            print(f"[+] LM Studio is running. Models: {', '.join(m['id'] for m in models)}")
+        else:
+            print("[!] LM Studio is running but no models are loaded.")
+            exit(1)
     except Exception:
-        print("[!] Ollama not reachable. Run: ollama serve")
+        print(f"[!] LM Studio not reachable at {LLM_BASE_URL}. Is it running?")
         exit(1)
 
     target = input("Test target: ").strip()

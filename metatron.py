@@ -49,7 +49,7 @@ def banner():
     ██║ ╚═╝ ██║███████╗   ██║   ██║  ██║   ██║   ██║  ██║╚██████╔╝██║ ╚████║
     ╚═╝     ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝
 \033[0m
-    \033[90mAI Penetration Testing Assistant  |  Model: metatron-qwen  |  Parrot OS\033[0m
+    \033[90mAI Penetration Testing Assistant  |  LM Studio  |  Kali Linux\033[0m
     \033[90m─────────────────────────────────────────────────────────────────────\033[0m
 """)
 
