@@ -19,8 +19,11 @@ LLM_URL        = LLM_BASE_URL.rstrip("/") + "/v1/chat/completions"
 LLM_MODELS_URL = LLM_BASE_URL.rstrip("/") + "/v1/models"
 MODEL_NAME     = os.environ.get("METATRON_MODEL", "huihui-ai.huihui-qwen3.5-27b-abliterated")
 MAX_TOKENS     = int(os.environ.get("METATRON_MAX_TOKENS", "8192"))
+TOP_K          = int(os.environ.get("METATRON_TOP_K", "10"))       # Modelfile default: 10
 LLM_TIMEOUT    = int(os.environ.get("METATRON_TIMEOUT", "600"))
 MAX_TOOL_LOOPS = int(os.environ.get("METATRON_MAX_LOOPS", "9"))
+# Note: context window (num_ctx=16384 in Modelfile) is set at model load time,
+# not via API payload. Configure in Ollama Modelfile or LM Studio model settings.
 
 # ─────────────────────────────────────────────
 # DATABASE (MariaDB)

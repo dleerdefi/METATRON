@@ -15,6 +15,7 @@ SEVERITY_COLORS = {
     "high":     "#e67e22",
     "medium":   "#f1c40f",
     "low":      "#27ae60",
+    "info":     "#3498db",
     "unknown":  "#7f8c8d",
 }
 
@@ -40,9 +41,14 @@ def fetch_session(sl_no: int) -> dict:
     exploits = c.fetchall()
     c.execute("SELECT * FROM summary WHERE sl_no = %s", (sl_no,))
     summary = c.fetchone()
+    c.execute("SELECT * FROM corrections WHERE sl_no = %s ORDER BY corrected_at", (sl_no,))
+    corrections = c.fetchall()
+    c.execute("SELECT * FROM evaluations WHERE sl_no = %s ORDER BY evaluated_at", (sl_no,))
+    evaluations = c.fetchall()
     conn.close()
     return {"history": history, "vulns": vulns, "fixes": fixes,
-            "exploits": exploits, "summary": summary}
+            "exploits": exploits, "summary": summary, "corrections": corrections,
+            "evaluations": evaluations}
 
 
 def fetch_all_history():
@@ -116,11 +122,12 @@ def export_pdf(data: dict, output_dir: str) -> str:
     story.append(HRFlowable(width="100%", thickness=0.5,
                              color=colors.HexColor("#dddddd"), spaceAfter=6))
     if data["vulns"]:
-        vd = [["#", "Vulnerability", "Severity", "Port", "Service"]]
+        vd = [["#", "Vulnerability", "Severity", "Confidence", "Port", "Service"]]
         for v in data["vulns"]:
             vd.append([str(v[0]), str(v[2] or "-"),
-                       str(v[3] or "-").upper(), str(v[4] or "-"), str(v[5] or "-")])
-        vt  = Table(vd, colWidths=[10*mm, 72*mm, 24*mm, 18*mm, 28*mm], repeatRows=1)
+                       str(v[3] or "-").upper(), str(v[4] or "-"),
+                       str(v[5] or "-"), str(v[6] or "-")])
+        vt  = Table(vd, colWidths=[10*mm, 58*mm, 20*mm, 20*mm, 16*mm, 28*mm], repeatRows=1)
         vts = [
             ("FONTNAME",       (0,0), (-1,0),  "Helvetica-Bold"),
             ("FONTSIZE",       (0,0), (-1,-1), 8),
@@ -144,9 +151,10 @@ def export_pdf(data: dict, output_dir: str) -> str:
         for v in data["vulns"]:
             sc  = colors.HexColor(SEVERITY_COLORS.get((v[3] or "unknown").lower(), "#7f8c8d"))
             lbl = ParagraphStyle("vl", fontSize=9, fontName="Helvetica-Bold", textColor=sc)
-            story.append(Paragraph(f"[{(v[3] or 'UNKNOWN').upper()}] {v[2]}", lbl))
-            if v[6]:
-                story.append(Paragraph(str(v[6]), body_style))
+            conf_str = f" ({v[4]})" if v[4] else ""
+            story.append(Paragraph(f"[{(v[3] or 'UNKNOWN').upper()}]{conf_str} {v[2]}", lbl))
+            if v[7]:
+                story.append(Paragraph(str(v[7]), body_style))
             story.append(Spacer(1, 4))
     else:
         story.append(Paragraph("No vulnerabilities recorded.", body_style))
@@ -185,6 +193,53 @@ def export_pdf(data: dict, output_dir: str) -> str:
         story.append(et)
     else:
         story.append(Paragraph("No exploits recorded.", body_style))
+
+    # ── CORRECTIONS / HALLUCINATIONS ──────
+    CORRECTION_COLORS = {
+        "hallucination": "#c0392b",
+        "corrected":     "#f39c12",
+        "verified":      "#27ae60",
+        "downgraded":    "#e67e22",
+        "reclassified":  "#2980b9",
+    }
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("Corrections & Hallucinations", h1_style))
+    story.append(HRFlowable(width="100%", thickness=0.5,
+                             color=colors.HexColor("#dddddd"), spaceAfter=6))
+    if data.get("corrections"):
+        cd = [["#", "Vuln ID", "Status", "Reason"]]
+        for cr in data["corrections"]:
+            cd.append([str(cr[0]), str(cr[2]), str(cr[3] or "-").upper(),
+                       str(cr[6] or "-")[:80]])
+        ct = Table(cd, colWidths=[10*mm, 16*mm, 28*mm, 100*mm], repeatRows=1)
+        cts = [
+            ("FONTNAME",       (0,0), (-1,0),  "Helvetica-Bold"),
+            ("FONTSIZE",       (0,0), (-1,-1), 8),
+            ("BACKGROUND",     (0,0), (-1,0),  colors.HexColor("#2c3e50")),
+            ("TEXTCOLOR",      (0,0), (-1,0),  colors.white),
+            ("GRID",           (0,0), (-1,-1), 0.3, colors.HexColor("#dddddd")),
+            ("PADDING",        (0,0), (-1,-1), 5),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.HexColor("#f9f9f9"), colors.white]),
+        ]
+        for i, cr in enumerate(data["corrections"], 1):
+            cc = colors.HexColor(CORRECTION_COLORS.get((cr[3] or "").lower(), "#7f8c8d"))
+            cts.append(("TEXTCOLOR", (2,i), (2,i), cc))
+            cts.append(("FONTNAME",  (2,i), (2,i), "Helvetica-Bold"))
+        ct.setStyle(TableStyle(cts))
+        story.append(ct)
+        story.append(Spacer(1, 4))
+
+        for cr in data["corrections"]:
+            cc = colors.HexColor(CORRECTION_COLORS.get((cr[3] or "").lower(), "#7f8c8d"))
+            lbl = ParagraphStyle("cl", fontSize=9, fontName="Helvetica-Bold", textColor=cc)
+            story.append(Paragraph(f"[{(cr[3] or '').upper()}] Vuln #{cr[2]}", lbl))
+            story.append(Paragraph(f"Original: {cr[4] or '-'}", body_style))
+            if cr[5]:
+                story.append(Paragraph(f"Corrected: {cr[5]}", body_style))
+            story.append(Paragraph(f"Reason: {cr[6] or '-'}", body_style))
+            story.append(Spacer(1, 4))
+    else:
+        story.append(Paragraph("No corrections recorded.", body_style))
 
     story.append(Spacer(1, 6))
     story.append(Paragraph("AI Analysis Summary", h1_style))
@@ -227,10 +282,11 @@ def export_html(data: dict, output_dir: str) -> str:
     for v in data["vulns"]:
         sc = SEVERITY_COLORS.get((v[3] or "unknown").lower(), "#7f8c8d")
         vuln_rows += (f"<tr><td>{v[0]}</td>"
-                      f"<td><strong>{v[2]}</strong><br><small>{v[6] or ''}</small></td>"
+                      f"<td><strong>{v[2]}</strong><br><small>{v[7] or ''}</small></td>"
                       f"<td><span style='color:{sc};font-weight:bold'>"
                       f"{(v[3] or 'unknown').upper()}</span></td>"
-                      f"<td>{v[4] or '-'}</td><td>{v[5] or '-'}</td></tr>")
+                      f"<td>{v[4] or '-'}</td>"
+                      f"<td>{v[5] or '-'}</td><td>{v[6] or '-'}</td></tr>")
 
     fix_rows = ""
     for f in data["fixes"]:
@@ -244,6 +300,23 @@ def export_html(data: dict, output_dir: str) -> str:
                      f"<td>{e[3] or '-'}</td>"
                      f"<td><code>{str(e[4] or '-')[:80]}</code></td>"
                      f"<td>{e[5] or '-'}</td></tr>")
+
+    CORRECTION_HTML_COLORS = {
+        "hallucination": "#e74c3c",
+        "corrected":     "#f39c12",
+        "verified":      "#2ecc71",
+        "downgraded":    "#e67e22",
+        "reclassified":  "#3498db",
+    }
+    corr_rows = ""
+    for cr in data.get("corrections", []):
+        sc = CORRECTION_HTML_COLORS.get((cr[3] or "").lower(), "#888")
+        corr_rows += (f"<tr><td>{cr[0]}</td><td>{cr[2]}</td>"
+                      f"<td><span style='color:{sc};font-weight:bold'>"
+                      f"{(cr[3] or '').upper()}</span></td>"
+                      f"<td>{cr[4] or '-'}</td>"
+                      f"<td>{cr[5] or '-'}</td>"
+                      f"<td>{cr[6] or '-'}</td></tr>")
 
     ai_html = "".join(f"<p>{line}</p>"
                       for line in str(ai).split("\n") if line.strip())
@@ -312,7 +385,7 @@ a{{color:#555}}
 
 <section>
   <h2>Vulnerabilities</h2>
-  {'<table><thead><tr><th>#</th><th>Vulnerability</th><th>Severity</th><th>Port</th><th>Service</th></tr></thead><tbody>' + vuln_rows + '</tbody></table>' if data["vulns"] else '<p style="color:#888">None recorded.</p>'}
+  {'<table><thead><tr><th>#</th><th>Vulnerability</th><th>Severity</th><th>Confidence</th><th>Port</th><th>Service</th></tr></thead><tbody>' + vuln_rows + '</tbody></table>' if data["vulns"] else '<p style="color:#888">None recorded.</p>'}
 </section>
 
 <section>
@@ -323,6 +396,11 @@ a{{color:#555}}
 <section>
   <h2>Exploits Attempted</h2>
   {'<table><thead><tr><th>#</th><th>Exploit</th><th>Tool</th><th>Payload</th><th>Result</th></tr></thead><tbody>' + exp_rows + '</tbody></table>' if data["exploits"] else '<p style="color:#888">None recorded.</p>'}
+</section>
+
+<section>
+  <h2>Corrections &amp; Hallucinations</h2>
+  {'<table><thead><tr><th>#</th><th>Vuln ID</th><th>Status</th><th>Original</th><th>Corrected</th><th>Reason</th></tr></thead><tbody>' + corr_rows + '</tbody></table>' if corr_rows else '<p style="color:#888">None recorded.</p>'}
 </section>
 
 <section>
