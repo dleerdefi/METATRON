@@ -21,72 +21,63 @@ from prompts import SYSTEM_PROMPT, REVIEW_PROMPT, STATUS_LABELS
 
 def load_correction_rules() -> str:
     """
-    Query all corrections from the database and distill them into
-    concise rules that get injected into the system prompt.
-    Groups by error type to create generalizable lessons, not just
-    a list of past-target-specific mistakes.
+    Load learned rules for injection into the system prompt.
+
+    Priority: learned_rules table (distilled by external LLM) > raw corrections.
+    If distilled rules exist, use those — they're compact and fit in context.
+    If no distilled rules exist, fall back to a lightweight summary of raw corrections.
     """
     try:
         from db import get_connection
         conn = get_connection()
         c = conn.cursor()
+
+        # Try learned rules first (distilled by external LLM)
+        c.execute("SELECT rule_text FROM learned_rules ORDER BY id")
+        rules = c.fetchall()
+
+        if rules:
+            conn.close()
+            lines = [
+                "",
+                "LEARNED RULES (distilled from past correction reviews):",
+                "These rules are verified. Follow them strictly.",
+                ""
+            ]
+            for (rule_text,) in rules:
+                lines.append(f"  - {rule_text}")
+            return "\n".join(lines)
+
+        # Fallback: lightweight summary from raw corrections
         c.execute("""
-            SELECT c.status, c.original_text, c.corrected_text, c.reason,
-                   v.vuln_name, v.severity, h.target
+            SELECT c.status, COUNT(*) as cnt,
+                   GROUP_CONCAT(DISTINCT LEFT(c.reason, 80) SEPARATOR ' | ')
             FROM corrections c
-            JOIN vulnerabilities v ON c.vuln_id = v.id
-            JOIN history h ON c.sl_no = h.sl_no
-            ORDER BY c.corrected_at DESC
-            LIMIT 50
+            GROUP BY c.status
+            HAVING c.status != 'verified'
+            ORDER BY cnt DESC
         """)
-        rows = c.fetchall()
+        summaries = c.fetchall()
         conn.close()
+
+        if not summaries:
+            return ""
+
+        lines = [
+            "",
+            "PAST ERRORS (no distilled rules yet — run Distill Rules for better results):",
+            ""
+        ]
+        for status, count, reasons in summaries:
+            label = STATUS_LABELS.get(status, status.upper())
+            # Take just the first reason as an example
+            example = reasons.split(" | ")[0] if reasons else ""
+            lines.append(f"  [{label}] ({count}x) e.g.: {example[:100]}")
+
+        return "\n".join(lines)
+
     except Exception:
         return ""
-
-    if not rows:
-        return ""
-
-    # Group corrections by status for cleaner rules
-    by_status = {}
-    for status, original, corrected, reason, vuln_name, severity, target in rows:
-        by_status.setdefault(status, []).append({
-            "original": original, "corrected": corrected,
-            "reason": reason, "vuln_name": vuln_name,
-            "severity": severity, "target": target
-        })
-
-    lines = [
-        "",
-        "LEARNED CORRECTIONS FROM PAST SCANS:",
-        "These are verified mistakes from previous analyses. DO NOT repeat them.",
-        ""
-    ]
-
-    for status, items in by_status.items():
-        label = STATUS_LABELS.get(status, status.upper())
-        lines.append(f"[{label}]")
-        for item in items:
-            lines.append(f"  - {item['reason']}")
-        lines.append("")
-
-    # Add generalized rules extracted from patterns
-    hallucinations = by_status.get("hallucination", [])
-    if hallucinations:
-        lines.append("ANTI-HALLUCINATION RULES (derived from above):")
-        for h in hallucinations:
-            # Extract the core lesson from each hallucination reason
-            lines.append(f"  - NEVER: {h['reason'][:200]}")
-        lines.append("")
-
-    corrected = by_status.get("corrected", [])
-    if corrected:
-        lines.append("CVE ACCURACY RULES (derived from above):")
-        for c in corrected:
-            lines.append(f"  - {c['reason'][:200]}")
-        lines.append("")
-
-    return "\n".join(lines)
 
 
 def build_system_prompt() -> str:
@@ -396,18 +387,18 @@ If analysis is complete, give the final RISK_LEVEL and SUMMARY."""
 
     print(f"\n[+] Parsed: {len(vulnerabilities)} vulns, {len(recommendations)} recs, {len(exploits)} exploits | Risk: {risk_level}")
 
-    # Tag flagged vulns so they can be marked in the database
+    # Tag flagged findings (vulns AND recommendations) for database marking
     flagged_map = {}
     for f in review_result["flags"]:
         flagged_map[f["vuln_name"].lower()] = f
-    for vuln in vulnerabilities:
-        name_lower = vuln["vuln_name"].lower()
+    for finding in vulnerabilities + recommendations:
+        name_lower = finding["vuln_name"].lower()
         for flagged_name, flag_data in flagged_map.items():
             if flagged_name in name_lower or name_lower in flagged_name:
-                vuln["_review_flag"] = flag_data["verdict"]
-                vuln["_review_evidence"] = flag_data.get("evidence", "")
-                vuln["_review_issue"] = flag_data.get("issue", "")
-                vuln["_review_corrected"] = flag_data.get("corrected", "")
+                finding["_review_flag"] = flag_data["verdict"]
+                finding["_review_evidence"] = flag_data.get("evidence", "")
+                finding["_review_issue"] = flag_data.get("issue", "")
+                finding["_review_corrected"] = flag_data.get("corrected", "")
                 break
 
     return {

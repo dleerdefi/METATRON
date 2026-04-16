@@ -310,17 +310,16 @@ def test_load_correction_rules():
     from llm import load_correction_rules
     rules = load_correction_rules()
     assert len(rules) > 0, "No correction rules loaded"
-    assert "LEARNED CORRECTIONS" in rules
-    assert "HALLUCINATION" in rules
-    assert "Log4j" in rules or "Java" in rules  # Should reference our SL#3 corrections
+    # Should contain either distilled rules or fallback summary
+    assert "LEARNED RULES" in rules or "PAST ERRORS" in rules
 
 test("load_correction_rules pulls from DB", test_load_correction_rules)
 
 def test_build_system_prompt():
-    from llm import build_system_prompt, SYSTEM_PROMPT
+    from llm import build_system_prompt
+    from prompts import SYSTEM_PROMPT
     prompt = build_system_prompt()
     assert len(prompt) > len(SYSTEM_PROMPT), "System prompt should be longer with corrections"
-    assert "LEARNED CORRECTIONS" in prompt
     assert "METATRON" in prompt  # Base prompt still there
 
 test("build_system_prompt injects corrections", test_build_system_prompt)

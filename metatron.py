@@ -21,7 +21,6 @@ from db import (
     get_fixes,
     get_exploits,
     get_corrections,
-    get_evaluations,
     edit_vulnerability,
     edit_fix,
     edit_exploit,
@@ -31,14 +30,19 @@ from db import (
     delete_exploit,
     delete_fix,
     delete_correction,
-    delete_evaluation,
     delete_full_session,
-    export_training_data,
+)
+from db_display import print_history, print_session
+from db_evals import (
+    get_evaluations,
+    delete_evaluation,
     export_eval_package,
     parse_evaluation_response,
-    print_history,
-    print_session
+    export_distillation_package,
+    import_distilled_rules,
+    get_learned_rules,
 )
+from db_training import export_training_data
 from tools import interactive_tool_run, format_recon_for_llm, run_default_recon
 from llm import analyse_target
 
@@ -532,7 +536,9 @@ def main_menu():
         print("  \033[92m[3]\033[0m  Export Eval Package")
         print("  \033[92m[4]\033[0m  Import Evaluation")
         print("  \033[92m[5]\033[0m  Export Training Data")
-        print("  \033[92m[6]\033[0m  Exit")
+        print("  \033[92m[6]\033[0m  Distill Rules (external LLM)")
+        print("  \033[92m[7]\033[0m  Import Distilled Rules")
+        print("  \033[92m[8]\033[0m  Exit")
         divider()
 
         choice = prompt("metatron> ")
@@ -604,6 +610,47 @@ def main_menu():
             input("\n\033[90mPress Enter to continue...\033[0m")
 
         elif choice == "6":
+            divider("DISTILL RULES")
+            info("Exports all corrections as a distillation package for an external LLM.")
+            existing = get_learned_rules()
+            if existing:
+                info(f"Currently {len(existing)} learned rule(s) in database.")
+            path = export_distillation_package()
+            if path:
+                success(f"Distillation package ready: {path}")
+                info("Paste the contents into Claude Code or another LLM.")
+                info("Then use [7] Import Distilled Rules to store the RULE: lines.")
+            input("\n\033[90mPress Enter to continue...\033[0m")
+
+        elif choice == "7":
+            divider("IMPORT DISTILLED RULES")
+            info("Paste an external LLM's distilled rules to replace the current rule set.")
+            existing = get_learned_rules()
+            if existing:
+                warn(f"This will REPLACE the current {len(existing)} learned rule(s).")
+            source = prompt("Source name (e.g., claude-opus-4-6): ")
+            if not source:
+                source = "unknown"
+            print("\nPaste the distilled rules below.")
+            print("When done, enter a line with just 'END' to finish.\n")
+            response_lines = []
+            while True:
+                line = input()
+                if line.strip() == "END":
+                    break
+                response_lines.append(line)
+            response_text = "\n".join(response_lines)
+            if response_text.strip():
+                saved = import_distilled_rules(source, response_text)
+                if saved:
+                    success(f"Imported {len(saved)} learned rule(s) from {source}")
+                else:
+                    warn("No RULE: lines found in the response.")
+            else:
+                warn("Empty response. Nothing saved.")
+            input("\n\033[90mPress Enter to continue...\033[0m")
+
+        elif choice == "8":
             print("\n\033[91m[*] Shutting down Metatron. Stay legal.\033[0m\n")
             sys.exit(0)
 

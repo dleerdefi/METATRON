@@ -7,8 +7,8 @@ Evaluation CRUD, eval package export, and evaluation response parser.
 import re
 import os
 from datetime import datetime
-from db import get_connection
-from prompts import EVAL_RUBRIC
+from db import get_connection, save_correction
+from prompts import EVAL_RUBRIC, DISTILLATION_PROMPT
 
 
 # ─────────────────────────────────────────────
@@ -197,11 +197,16 @@ def parse_evaluation_response(sl_no: int, evaluator: str, response_text: str) ->
     """
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT id, vuln_name FROM vulnerabilities WHERE sl_no = %s", (sl_no,))
-    vulns = {row[1].lower().strip(): row[0] for row in c.fetchall()}
+    c.execute("SELECT id, vuln_name, severity, confidence, description FROM vulnerabilities WHERE sl_no = %s", (sl_no,))
+    vuln_rows = c.fetchall()
     conn.close()
 
+    # Build lookup maps
+    vulns = {row[1].lower().strip(): row[0] for row in vuln_rows}
+    vuln_details = {row[0]: row for row in vuln_rows}  # id -> (id, name, severity, confidence, desc)
+
     saved_ids = []
+    corrections_created = 0
     blocks = re.split(r'(?=EVAL:)', response_text, flags=re.IGNORECASE)
 
     for block in blocks:
@@ -244,6 +249,24 @@ def parse_evaluation_response(sl_no: int, evaluator: str, response_text: str) ->
         saved_ids.append(eid)
         print(f"  [+] Saved eval for '{vuln_name}' (vuln #{vuln_id}): {verdict} [{confidence}]")
 
+        # Auto-generate correction from non-valid verdicts
+        # This bridges evaluations → corrections → future prompt injection
+        if verdict in ("hallucination", "corrected", "downgraded", "reclassified"):
+            vd = vuln_details.get(vuln_id)
+            if vd:
+                original = f"[{vd[2]}] {vd[1]}: {vd[4][:200] if vd[4] else ''}"
+                reason_parts = [f"External eval by {evaluator} [{confidence} confidence]"]
+                if notes:
+                    reason_parts.append(notes[:300])
+                if evidence:
+                    reason_parts.append(f"Evidence: {evidence[:200]}")
+                reason = " | ".join(reason_parts)
+                save_correction(sl_no, vuln_id, verdict, original, "", reason)
+                corrections_created += 1
+
+    if corrections_created:
+        print(f"  [+] Auto-created {corrections_created} correction(s) from evaluation verdicts")
+
     overall_risk = re.search(r'OVERALL_RISK_LEVEL:\s*(CRITICAL|HIGH|MEDIUM|LOW)', response_text, re.IGNORECASE)
     halluc_count = re.search(r'HALLUCINATION_COUNT:\s*(\d+)', response_text, re.IGNORECASE)
     accuracy_summary = re.search(r'ACCURACY_SUMMARY:\s*(.+?)(?:\n|$)', response_text, re.IGNORECASE)
@@ -255,4 +278,140 @@ def parse_evaluation_response(sl_no: int, evaluator: str, response_text: str) ->
     if accuracy_summary:
         print(f"  [*] Accuracy summary: {accuracy_summary.group(1).strip()}")
 
+    return saved_ids
+
+
+# ─────────────────────────────────────────────
+# LEARNED RULES — distilled from corrections
+# ─────────────────────────────────────────────
+
+def save_learned_rule(rule_text: str, source: str) -> int:
+    """Save a single distilled rule."""
+    conn = get_connection()
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("""
+        INSERT INTO learned_rules (rule_text, source, created_at)
+        VALUES (%s, %s, %s)
+    """, (rule_text, source, now))
+    conn.commit()
+    rid = c.lastrowid
+    conn.close()
+    return rid
+
+
+def get_learned_rules():
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, rule_text, source, created_at FROM learned_rules ORDER BY id")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+def clear_learned_rules():
+    """Remove all learned rules (before importing a fresh distillation)."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM learned_rules")
+    conn.commit()
+    conn.close()
+
+
+def export_distillation_package(output_dir: str = None) -> str:
+    """
+    Export all raw corrections as a distillation package for an external LLM.
+    The external LLM reads this and outputs compact RULE: lines.
+    Returns the output file path.
+    """
+    if output_dir is None:
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evals")
+    os.makedirs(output_dir, exist_ok=True)
+
+    conn = get_connection()
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT c.status, c.reason, v.vuln_name, v.severity, h.target, c.corrected_at
+        FROM corrections c
+        JOIN vulnerabilities v ON c.vuln_id = v.id
+        JOIN history h ON c.sl_no = h.sl_no
+        ORDER BY c.corrected_at DESC
+    """)
+    corrections = c.fetchall()
+
+    c.execute("SELECT id, rule_text, source, created_at FROM learned_rules ORDER BY id")
+    existing_rules = c.fetchall()
+
+    conn.close()
+
+    if not corrections:
+        print("[!] No corrections in database. Nothing to distill.")
+        return ""
+
+    lines = []
+    lines.append("# METATRON Rule Distillation Package")
+    lines.append("")
+    lines.append(f"**Total corrections to distill:** {len(corrections)}")
+    lines.append(f"**Existing learned rules:** {len(existing_rules)}")
+    lines.append("")
+
+    # Section 1: Existing rules (so the reviewer can update/refine them)
+    if existing_rules:
+        lines.append("---")
+        lines.append("## CURRENT LEARNED RULES")
+        lines.append("These rules were distilled from a previous review. Update, refine, or replace as needed.")
+        lines.append("")
+        for r in existing_rules:
+            lines.append(f"RULE: {r[1]}  (source: {r[2]}, {r[3]})")
+        lines.append("")
+
+    # Section 2: Raw corrections
+    lines.append("---")
+    lines.append("## RAW CORRECTIONS")
+    lines.append("")
+    for status, reason, vuln_name, severity, target, corrected_at in corrections:
+        lines.append(f"[{status.upper()}] {vuln_name} ({severity}) — target: {target}")
+        lines.append(f"  Reason: {reason}")
+        lines.append("")
+
+    # Section 3: Distillation instructions
+    lines.append("---")
+    lines.append(DISTILLATION_PROMPT)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(output_dir, f"distill_{timestamp}.md")
+    with open(filename, "w") as f:
+        f.write("\n".join(lines))
+
+    print(f"[+] Distillation package exported: {filename}")
+    return filename
+
+
+def import_distilled_rules(source: str, response_text: str) -> list:
+    """
+    Parse RULE: lines from an external LLM's distillation response.
+    Replaces all existing learned rules with the new set.
+    Returns list of saved rule IDs.
+    """
+    rules = re.findall(r'RULE:\s*(.+?)(?:\n|$)', response_text, re.IGNORECASE)
+
+    if not rules:
+        print("[!] No RULE: lines found in response.")
+        return []
+
+    # Replace existing rules with the fresh distillation
+    clear_learned_rules()
+    print(f"[*] Cleared previous learned rules.")
+
+    saved_ids = []
+    for rule_text in rules:
+        rule_text = rule_text.strip()
+        if not rule_text or len(rule_text) < 10:
+            continue
+        rid = save_learned_rule(rule_text, source)
+        saved_ids.append(rid)
+        print(f"  [+] Rule #{rid}: {rule_text[:80]}")
+
+    print(f"[+] Imported {len(saved_ids)} learned rule(s) from {source}")
     return saved_ids

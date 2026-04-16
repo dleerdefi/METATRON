@@ -49,9 +49,16 @@ EVIDENCE: <exact text quoted from scan output that supports this finding>
 DESC: <description — only what the evidence supports, nothing more>
 FIX: <fix recommendation>
 
+PLATFORM AWARENESS:
+- If scan data reveals a managed hosting platform (Wix, Squarespace, Shopify, WordPress.com, Netlify, Vercel, GitHub Pages, etc.), adjust ALL findings and recommendations accordingly.
+- Users on managed platforms do NOT control server headers, TLS configuration, web server version, or infrastructure settings.
+- Do NOT recommend server-level changes (X-Frame-Options, CSP headers, HSTS, TLS upgrades, server version updates) for managed platforms — these are controlled by the platform, not the customer.
+- Only recommend actions the site owner can actually take (e.g., content-level issues, DNS configuration, third-party script risks, plugin vulnerabilities for CMS platforms).
+- State the detected platform clearly in your analysis so the reader understands the scope of what is and isn't actionable.
+
 OUTPUT FORMAT FOR RECOMMENDATIONS (security hardening, NOT vulnerabilities):
 REC: <recommendation name>
-DESC: <what should be improved and why>
+DESC: <what should be improved and why — must be actionable by the site owner>
 
 OUTPUT FORMAT FOR EXPLOITS (only for confirmed or likely findings):
 EXPLOIT: <name> | TOOL: <tool> | PAYLOAD: <payload or description>
@@ -87,7 +94,7 @@ Given:
 2. AI ANALYSIS (what the AI concluded — this is what you are auditing)
 3. KNOWN ERROR PATTERNS (mistakes this system has made before — watch for repeats)
 
-For each vulnerability in the AI analysis, apply these checks IN ORDER:
+For EVERY finding in the AI analysis — vulnerabilities AND recommendations (REC: lines) — apply these checks IN ORDER. Do NOT skip info-level or recommendation findings. ALL findings must pass review:
 
 CHECK 1 — EVIDENCE GATE: Does the EVIDENCE field quote actual text from the raw scan data?
   - Search the raw scan data for the quoted text. If the quote is not found verbatim or
@@ -116,7 +123,20 @@ CHECK 5 — CONFIDENCE ACCURACY: Is the confidence level appropriate?
   - possible is for indirect indicators only.
   - If confidence is too high for the evidence, downgrade it.
 
-Output your review in this exact format for each finding:
+CHECK 6 — PLATFORM AWARENESS: Is the finding actionable given the hosting platform?
+  - If scan data shows a managed platform (Wix, Squarespace, Shopify, WordPress.com,
+    Netlify, Vercel, etc.), recommendations about server headers, TLS config, or
+    server software are NOT actionable by the site owner.
+  - Flag any recommendation that tells a managed-platform user to change something
+    they do not control as a reclassification (not actionable).
+
+CHECK 7 — RECOMMENDATION VALIDITY (for REC: lines specifically):
+  - Does the recommendation address something actually detected in the scan?
+  - Is it actionable by the site owner (not the hosting provider)?
+  - Is it a real concern, or generic boilerplate advice?
+  - Hallucinated recommendations are just as harmful as hallucinated vulnerabilities.
+
+Output your review in this exact format for each finding (vulnerabilities AND recommendations):
 
 REVIEW: <vuln name> | VERDICT: <valid|hallucination|corrected|downgraded|reclassified>
 EVIDENCE: <quote from raw scan data that supports OR refutes, or "none found in scan data">
@@ -189,3 +209,31 @@ STATUS_LABELS = {
     "reclassified":  "MISCLASSIFIED (not a vulnerability, reclassified)",
     "verified":      "VERIFIED CORRECT",
 }
+
+
+# ─────────────────────────────────────────────
+# DISTILLATION PROMPT — compress corrections into rules
+# ─────────────────────────────────────────────
+
+DISTILLATION_PROMPT = """You are distilling raw correction records from an AI penetration testing tool into compact, generalizable rules.
+
+Below is a list of corrections — each records a mistake the AI made during a scan and why it was wrong. Your job is to extract PATTERNS from these corrections and write them as short, reusable rules that prevent entire CLASSES of errors, not just individual instances.
+
+Guidelines:
+- Each rule should be ONE line, under 120 characters
+- Write rules as imperatives: "Never...", "Always...", "Only cite..."
+- Generalize: if multiple corrections describe the same mistake pattern, write ONE rule
+- Deduplicate: combine similar corrections into a single principle
+- Prioritize: hallucination-preventing rules first, then accuracy rules, then recommendation rules
+- Target 10-15 rules total. Quality over quantity.
+- Do NOT include target-specific details (IPs, domain names) — rules must apply to ANY future scan
+
+Output format (use this exactly, one per line):
+
+RULE: <short imperative rule text>
+
+Example output:
+RULE: Never associate Java libraries (Log4j, Spring) with C-based servers (Apache httpd, nginx)
+RULE: CVE version ranges must match exactly — CVE-2015-0204 affects 0.9.8/1.0.1, not 1.1.1+
+RULE: Managed platforms (Wix, Squarespace, Shopify) — never recommend server-level changes
+RULE: nmap filtered ports are inconclusive, not vulnerable — do not report as findings"""
